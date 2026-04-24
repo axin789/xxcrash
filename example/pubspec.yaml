@@ -1,0 +1,17 @@
+name: crash_reporter_example
+description: Demonstrates how to use the crash_reporter plugin
+
+environment:
+  sdk: ">=2.17.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  crash_reporter: any
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
