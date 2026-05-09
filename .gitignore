@@ -1,0 +1,36 @@
+# macOS
+.DS_Store
+
+# Dart / Flutter 构建产物
+.dart_tool/
+.packages
+.pub/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+.metadata
+
+# library 不入 pubspec.lock（让消费者各自解析）；example 是 app 但同样忽略，
+# 简化 review 噪音
+pubspec.lock
+example/pubspec.lock
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.iws
+*.ipr
+
+# Flutter 自动生成的胶水代码（每次 pub get 都会重写）
+android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
+example/android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
+example/ios/Runner/GeneratedPluginRegistrant.*
+example/macos/Flutter/GeneratedPluginRegistrant.swift
+example/linux/flutter/generated_plugin_registrant.*
+example/windows/flutter/generated_plugin_registrant.*
+example/web/
+
+# Coverage / 临时
+coverage/
+*.log

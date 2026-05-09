@@ -1,24 +1,20 @@
 name: xcrash
-description: A lightweight Flutter plugin for sending crash reports and logs to Webhook, Telegram, Slack or Discord.
-version: 1.0.0
-homepage: https://github.com/cas8398/crash_reporter
+description: A lightweight Flutter crash & runtime-event reporting SDK. Collects crashes, video player issues, API errors and custom business events with breadcrumbs and rate limiting, and hands the payload to your own HTTP layer.
+version: 2.0.0
 
 environment:
   sdk: ">=2.17.0 <4.0.0"
-  flutter: ">=1.17.0"
+  flutter: ">=3.0.0"
 
 dependencies:
   flutter:
     sdk: flutter
-  shared_preferences: ^2.0.0
+  device_info_plus: ">=11.3.0 <13.0.0"
+  package_info_plus: ">=8.0.0 <10.0.0"
+  video_player: ">=2.8.0 <3.0.0"
+  shared_preferences: ">=2.0.0 <3.0.0"
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^2.0.0
-  mockito: ^5.4.0
-  http: ^1.1.0 # For mocking HTTP calls
-  crypto: ^3.0.7
-  otp: ^3.2.0
-  device_info_plus: ^11.3.0
-  package_info_plus: ^8.3.0

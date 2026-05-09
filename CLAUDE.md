@@ -4,79 +4,110 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project identity
 
-Despite the README and folder being called `crash_reporter` / `xxcrash`, the actual Dart package name in `pubspec.yaml` is **`xcrash`**. Imports must use `package:xcrash/...`, not `package:crash_reporter/...`. The example app (`example/lib/main.dart`) still imports `package:crash_reporter/crash_reporter.dart` — that import is stale relative to the current package name and will not resolve without fixing the import or aliasing the dependency.
+**`xcrash`** — a Flutter SDK for crash and runtime-event reporting. Version 2.0 is a ground-up rewrite: it no longer bundles Telegram/Slack/Discord/Webhook transports. Host projects inject a `ContentSender` callback and the SDK just hands them a JSON string.
 
-The public entry point is `lib/crash_reporter.dart`, which re-exports the symbols in `lib/src/`. Only add a symbol to that barrel if it is meant to be public API.
+Public API lives behind `lib/xcrash.dart` (barrel). Import for consumers: `import 'package:xcrash/xcrash.dart';`.
+
+The barrel uses explicit `show` clauses to pin the public surface to exactly 7 symbols: `XCrashSDK`, `ContentSender`, `EventType`, `Severity`, `BreadcrumbNavigatorObserver`, `VideoPlayerReporter`, `TelegramConfig`. Everything else in `lib/src/` is internal. When adding something new, only surface it via `show` if consumers genuinely need it.
 
 ## Commands
 
-All commands are run from the package root. Flutter/Dart tooling is required.
-
 ```bash
-flutter pub get                          # install deps (also run inside example/ for the demo app)
-flutter test                             # run all tests in test/
-flutter test test/crash_reporter_test.dart   # run a single file
-flutter test --plain-name 'Local crash storage works'  # run a single test by name
-flutter analyze                          # lint (uses flutter_lints via default analysis_options)
-cd example && flutter run                # run the demo app against a device/emulator
+flutter pub get                                       # install deps
+flutter pub get --directory example                   # also needed for the demo
+flutter test                                          # run all 67 tests
+flutter test test/crash_sdk_test.dart                 # single file
+flutter test --plain-name 'sender 抛异常被吞掉'       # single test by name
+flutter analyze                                       # static analysis (expects 0 issues)
+cd example && flutter run                             # demo app
 ```
-
-Tests rely on `SharedPreferences.setMockInitialValues({})` to stub persistence — reuse that pattern for any new test that touches `CrashStorage`.
 
 ## Architecture
 
-The package exposes two layers. Do not confuse them — they have different lifecycles and different expectations about what the caller has already set up.
+### Single entry — `XCrashSDK`
 
-### Layer 1 — `CrashReporter` (`lib/src/crash_reporter.dart`)
+```
+XCrashSDK.init(sender, userProvider, appRunner, reportConfigs, intervalMs, telegram?)
+  │
+  ├─ sync setup first        — seed device platform + Session + limiter +
+  │                            _inited=true + _hookFlutterError + _hookPlatformDispatcher
+  │                            (so first-frame errors are captured)
+  └─ runZonedGuarded         — await appRunner →
+     │                        _hookLifecycle →
+     │                        unawaited(_loadPlatformInfo)  (PackageInfo + deviceInfo in bg) →
+     │                        unawaited(_flushPendingAndDetectLastCrash → writeHeartbeat boot)
+     ↳ zone error handler    — uncaught async errors → report(crash) (dedup'd with the 2 hooks)
+```
 
-Low-level static façade. Holds four optional notifier instances (`TelegramNotifier`, `SlackNotifier`, `DiscordNotifier`, `WebhookNotifier`), a `NotificationConfig` gating which of them fire, and a `CrashStorage` (SharedPreferences, capped at 50 entries) for local persistence.
+`_loadPlatformInfo` is `unawaited` because platform channels are slow and we don't want to block visible app startup. Before it resolves, `_deviceData` still has a minimal `{platform, debugMode}` seed set synchronously in `init()` — reports during that window carry *some* OS info, not empty maps.
 
-Key behaviors worth knowing before editing:
+After init, everything flows through **`XCrashSDK.report(type, subKey, severity, message, error, stack, context, data)`**. The three convenience methods `reportVideoError` / `reportApiError` / `reportBusinessError` are thin wrappers that set `type` + shape `data`.
 
-- `initialize()` is idempotent-ish but destructive: passing a config *without* a given notifier leaves the previously-constructed one in place (via the `update*Config` methods), but re-calling `initialize` replaces the `NotificationConfig` and may drop notifiers whose config is null. Prefer the typed `updateXConfig` methods for runtime reconfiguration.
-- Crashes reported **before** `initialize()` are queued in `_pendingCrashes` (still written to local storage) and flushed with a 500 ms delay between items after init. Any new code paths that produce crashes must tolerate this pre-init window.
-- `_sendToAllNotifiers` / `_sendEventToAllNotifiers` / `_sendStartupToAllNotifiers` fan out with `Future.wait(..., eagerError: false)` and swallow per-notifier failures via `.catchError`. Individual notifiers should still `rethrow` on transport errors; the fan-out is the single swallow point.
+Payload assembly happens inline in `report()`; output is a JSON-encoded map handed to the injected `ContentSender`. Sender exceptions are caught and debug-printed — never rethrown.
 
-### Layer 2 — `XCrashSDK` (`lib/src/crash_sdk.dart`)
+### Remote-crash resilience — `CrashPersistence`
 
-Opinionated wrapper designed for real-app integration. This is what apps typically call; it is *not* documented in the README.
+Three mechanisms on top of SharedPreferences:
 
-`XCrashSDK.init(...)` wires up, in order:
+1. **Pending queue** (`xcrash.pending.v1`): `report()` writes payload to disk before network; `removePending(id)` after the main sender succeeds. Size cap 20, FIFO. Each entry carries an `attempt` counter — `loadPendingForRetry()` only filters out poison pills (`attempt >= _maxAttempts=3`) and entries older than `_maxAgeMs=7d`. The `attempt` increment itself is deferred to `bumpPendingAttempt(id)`, called by the startup-flush loop *after* a dispatch genuinely fails — this avoids the old failure mode where dying mid-dispatch would still bump the counter and prematurely mark a payload as poison.
+2. **Heartbeat** (`xcrash.heartbeat.v1`): `updateHeartbeat(state)` persists "currently doing X" plus a snapshot of breadcrumbs. `init()` writes a `type: 'boot'` heartbeat right after the startup flush.
+3. **Clean-shutdown marker** (`xcrash.clean_shutdown.v1`): `_LifecycleObserver` sets it on `paused`/`detached`, clears it on `resumed` and every `writeHeartbeat`. On next cold start, "heartbeat exists + no clean shutdown" synthesizes a `suspected_native_crash` event.
 
-1. A `runZonedGuarded` around `appRunner`, so uncaught async errors flow into `CrashReportHelper.report`.
-2. `PackageInfo` + `getDeviceInfo()` (`lib/src/deviceinfo.dart`) snapshot into static `_appData` / `_deviceData` that are attached to every report.
-3. `CrashReporter.initialize(...)` with Telegram + Webhook enabled by default (Slack/Discord are **not** initialized by this path — add them via `updateSlackConfig` / `updateDiscordConfig` if needed).
-4. `FlutterError.onError` hook (synchronous framework errors).
-5. `ErrorReportLimiter` configuration (`setStartReportThresholds`, `setIntervalMs`).
+**All mutating ops are serialized on a single `Future` chain** (`CrashPersistence._queue`). Without this, concurrent `report()` calls race on the read-modify-write of the pending list and silently drop entries. This is the load-bearing piece — if you add new SharedPreferences ops to this file, go through `_serialize(...)`.
 
-Two subtleties that have bitten past changes:
+Entry ids are `<microseconds>.<8-hex-random>` so two `report()` calls in the same microsecond don't collide.
 
-- **Deferred server URL.** `init(crashReportUrl: () => ...)` stores the callback; the real webhook URL is resolved lazily on the first crash via `ensureServerConfig()` inside `ErrorReportLimiter.shouldReport`. Until `setServerConfigUrl` succeeds, `_reportEnabled` is false and **nothing is transmitted**, even though local storage still accumulates. When debugging "why isn't anything being sent," check `ErrorReportLimiter.reportEnabled` and the `crashReportUrl` callback's return value.
-- **Server URL format.** `setServerConfigUrl` requires a URL containing an `appid` query param (e.g. `https://host/report?appid=xxx`) and throws `ArgumentError` otherwise. The appId is extracted and reused as both the webhook query param and the HMAC-style signing input (`md5(appId + ts)`) in `WebhookNotifier._sendPayload`.
+### Rate limiting — `ErrorReportLimiter`
 
-### Rate limiting — `ErrorReportLimiter` (`lib/src/report_limiter.dart`)
+Keyed by `"${eventType}:${subKey}"`. Use `XCrashSDK.limiterKey(type, subKey)` (or the internal `ErrorReportLimiter.keyOf(...)`) to build the string — don't hand-concat in `reportConfigs` or you'll misspell and silently lose the rule. Two gates:
 
-Every crash flowing through `CrashReportHelper` is gated here, keyed by `runtimeType.toString()`:
+1. **Startup threshold** (`reportConfigs`). Key in the config is either the full limiter key (e.g. `"video:buffer_stall": 5`) or falls back to the error's `runtimeType.toString()`. Default is `{'DioException': 10, 'DioError': 10}` covering Dio 4 and 5.
+2. **Interval**. After a report is allowed, the same key is muted for `intervalMs`. Suppressed hits collect their `context` strings (ordered list, duplicates preserved, capped per key) and ride along in `suppressedContexts` on the next allowed report.
 
-- **Startup threshold** (`_startReportThreshold`): an error type must occur N times (configured via `setStartReportThresholds`, default `{"DioError": 10}`) before *any* report is emitted. Useful for noisy transient errors.
-- **Interval** (`_intervalMs`, default 60 s): after the startup threshold is cleared, at most one report per type per interval.
-- Suppressed hits accumulate `_suppressedCount` and unique `context` strings into `_suppressedContexts`; the next allowed report pulls them via `takeSuppressedContexts` and attaches them as `suppressedPaths`/`suppressedCount` in `extraData`.
-- A hard cap of 50 distinct error types is enforced by LRU eviction on `firstTime`.
+Distinct-key count is capped at `_maxTrackedKeys=500` with FIFO eviction. If you generate unbounded subKeys (e.g. putting raw IDs in `reportApiError`'s path), either fix the call site to template (`/user/:id` not `/user/123`) or call `ErrorReportLimiter.clear()` on user-switch.
 
-When adding a new entry point that reports crashes, route it through `CrashReportHelper.report` (not directly through `CrashReporter.reportCrash`) so the limiter and ignore policy apply.
+### Ignore policy
 
-### Ignore policy — `CrashExceptionPolicy` (`lib/src/crash_exception_policy.dart`)
+Inlined in `XCrashSDK._shouldIgnore`. Currently filters two Flutter-specific phantom errors: `Looking up a deactivated widget` and `setState() called after dispose`. Add new rules here, not at call sites. If the ignore set grows, split it back out to a dedicated file.
 
-Currently hard-codes two ignored messages: `"Looking up a deactivated widget"` and `"setState() called after dispose"`. Also strips a `path_` prefix from context strings before they're used as the limiter's context key. Add new ignore rules here rather than at call sites.
+### Session — `lib/src/session.dart`
 
-### Notifiers (`lib/src/notifiers/`)
+One sessionId per cold start (128-bit hex). `foregroundCount` is incremented by the lifecycle observer. All reports embed `session.{id, startTimeMs, durationMs, foregroundCount}`. Has a `@visibleForTesting` `debugReset()` — tests rely on it.
 
-All extend `BaseNotifier` and implement `sendCrashReport` / `sendEvent` / `sendAppStartup` / `testConnection` / `dispose`. Message formatting is centralized in `lib/src/message_builder.dart`, which produces HTML, Markdown, plain-text, and (for webhooks) JSON variants; the `ParseMode` enum in `lib/src/models/parse_mode.dart` selects between them. Note the enum's `None` value is PascalCase (Dart style lint ignored) — matches the wire protocol string `"None"`.
+### Breadcrumbs — `lib/src/breadcrumb/`
 
-`WebhookNotifier` is the only notifier that signs requests (`md5(appId + ts)` in headers `appid` / `ts` / `key`) and the only one that supports switchable `ParseMode`. The three chat-platform notifiers hardcode their own formatting.
+Ring buffer, capacity 50. `XCrashSDK.leaveBreadcrumb(...)` is the single write path. Each `report()` call embeds the current snapshot **and** appends itself to the buffer (so later reports see "we already reported X").
+
+Two auto-collectors:
+- `BreadcrumbNavigatorObserver` — users attach to `MaterialApp.navigatorObservers`.
+- Lifecycle transitions — wired automatically in `_LifecycleObserver`.
+
+There is intentionally no Dio collector bundled: Dio versions diverge and peer-dep hell isn't worth it. The README shows the 10-line interceptor pattern; users copy it.
+
+### `video_player` integration — `lib/src/integrations/video_player_reporter.dart`
+
+The only third-party integration with a **hard dependency** on `video_player`. Wraps `VideoPlayerController.addListener` and detects:
+
+- `playback_error`      — `value.hasError` transitions to true (reports once, then short-circuits)
+- `buffer_stall`        — `isPlaying` but `position` hasn't advanced for `bufferStallThreshold`
+- `first_frame_timeout` — `attach()` to first non-zero `position` exceeds `firstFrameTimeout`
+
+`visual_glitch` (花屏) is user-triggered via `reportVisualGlitch()` because decoder-level corruption rarely surfaces as an error event.
+
+Always pair `attach()` with `detach()` in the widget's dispose — otherwise listeners leak when controllers outlive the screen.
 
 ## Conventions
 
-- Dart comments and debug strings in this codebase mix English and Chinese — keep the existing language of any block you're editing, don't translate wholesale.
-- `debugPrint` is threaded through every class as `Function(String)` dependency injection rather than called directly, so tests can capture it. Preserve that pattern when adding new components.
-- The package targets Dart SDK `>=2.17.0 <4.0.0`. Avoid features that require a higher floor (records, patterns, etc.) unless you also bump the SDK constraint.
+- Code comments mix Chinese and English; match whichever is already present in the file you're editing.
+- Static-only classes (`XCrashSDK`, `Session`, `ErrorReportLimiter`) expose `@visibleForTesting` reset hooks. Use them in `setUp` / `tearDown`; don't reach into private state.
+- When adding a new event subtype, prefer a new `subKey` value under an existing `EventType` over introducing a new `EventType`. Only add to the enum when the backend needs a different schema.
+- Dart SDK floor is `>=2.17.0 <4.0.0`. Don't use records/patterns/switch expressions unless you also raise the floor.
+
+## Things that are easy to get wrong
+
+- **Renaming the barrel.** Public import is `package:xcrash/xcrash.dart`. Changing that breaks every consuming app — major version bump required.
+- **Test hooks and production code.** `XCrashSDK.debugForceEnable`, `debugReset`, and `debugFlushPendingAndDetectLastCrash` are `@visibleForTesting`. Do not call them from app code or examples — the lint will flag it, but the breakage (skipping PackageInfo/deviceInfo snapshot, skipping the runZonedGuarded hook, etc.) is silent.
+- **Bypassing `CrashPersistence._serialize` in new methods.** If you add a new read-modify-write path on SharedPreferences in this file and forget to wrap it in `_serialize`, you've reintroduced the concurrency race that the whole queue was built to prevent. Tests won't always catch this — they're deterministic-ish; a real user with FlutterError + PlatformDispatcher double-firing will.
+- **`video_player` dependency bloat.** Adding more player SDKs (better_player / fijkplayer) should be separate opt-in files under `integrations/`. Don't add their packages to `pubspec.yaml` as hard deps — that forces every consumer to pull them.
+- **Limiter keys are namespaced by event type.** The full key is `${type}:${subKey}`, so the same `subKey` under different `EventType`s does **not** collide — `video:buffer_stall` and `business:buffer_stall` are independent buckets. Always build keys via `XCrashSDK.limiterKey(...)` (or `ErrorReportLimiter.keyOf`) when populating `reportConfigs`; a hand-typed `'buffer_stall': 5` would be matched against the legacy errorType fallback path, not against any specific event.
+- **`reportApiError` path templating.** `subKey` is `"$path:$statusCode"`. If the path contains a raw ID (`/user/123`), every request generates a unique subKey and the limiter map hits its LRU cap. Template the path before calling.

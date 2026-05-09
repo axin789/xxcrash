@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
 import '../../crash_sdk.dart';
 
 /// 自动把页面跳转写成面包屑。

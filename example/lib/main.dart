@@ -1,155 +1,67 @@
-import 'dart:ui';
+import 'dart:async';
+
 import 'package:flutter/material.dart';
-import 'package:crash_reporter/crash_reporter.dart';
+import 'package:xcrash/xcrash.dart';
+
+import 'app_config.dart';
+import 'pages/crash_demo_page.dart';
+import 'pages/home_page.dart';
+import 'pages/payload_log_page.dart';
+import 'pages/rate_limit_demo_page.dart';
+import 'pages/report_demo_page.dart';
+import 'pages/telegram_config_page.dart';
+import 'pages/video_demo_page.dart';
+import 'sender_log.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Initialize with your credentials
-  CrashReporter.initialize(
-    showDebugPrint: true,
+  // 把每次 sender 收到的 JSON 镜像到内存日志里，UI 可以直接看到。
+  // 真实工程里这里应该是 HttpUtils.post('/system/track', data: {'content': content})。
+  Future<void> demoSender(String content) async {
+    SenderLog.instance.add(content);
+    debugPrint('[xcrash.sender] ${content.length} chars');
+  }
 
-    // Telegram
-    telegramConfig: TelegramConfig(
-      botToken: '123456:XXXXXX',
-      chatId: -123,
-      parseMode: 'HTML',
-      disableWebPagePreview: true,
-      disableNotification: false,
-    ),
-
-    // Slack
-    slackConfig: SlackConfig(
-      webhookUrl: 'https://hooks.slack.com/services/XXX/XXX/XXX',
-    ),
-
-    // Discord
-    discordConfig: DiscordConfig(
-      webhookUrl: 'https://discord.com/api/webhooks/XXX/XXX',
-      username: '🚨 Crash Reporter',
-      avatarUrl: 'https://randomuser.me/api/portraits/lego/8.jpg',
-    ),
-
-    // Webhook
-    webhookConfig: WebhookConfig(
-      url: 'http://example.com/api/webhook/test',
-      headers: {'Authorization': 'Bearer your_token'},
-    ),
-
-    // Configuration - ENABLE the services you want
-    notificationConfig: NotificationConfig(
-      enableTelegram: true,
-      enableSlack: true,
-      enableDiscord: true,
-      enableWebhook: true,
-      sendCrashReports: true,
-      sendEvents: true,
-      sendStartupEvents: true,
-    ),
+  XCrashSDK.init(
+    appRunner: () async => runApp(const DemoApp()),
+    userProvider: () => const {'uid': 'demo-user-001', 'role': 'qa'},
+    sender: demoSender,
+    // 这里故意把门槛调低，方便 demo 里按一两下就能看到上报。
+    // 生产环境一般把 buffer_stall / DioException 设成 5~10。
+    reportConfigs: const {
+      'video:buffer_stall': 3,
+      'video:playback_error': 1,
+      'business:demo_rate_limit': 10, // 配合限频 demo：前 9 次累计，第 10 次才放行
+    },
+    intervalMs: 60 * 1000,
+    telegram: AppConfig.telegramConfig, // 未配置 TG_BOT_TOKEN 时返回 null，自动跳过
   );
-
-  // Send startup notification
-  CrashReporter.sendAppStartup();
-
-  // Catch Flutter UI framework errors
-  FlutterError.onError = (details) {
-    CrashReporter.reportCrash(
-      error: details.exception,
-      stackTrace: details.stack ?? StackTrace.current,
-      context: 'Flutter UI Error: ${details.library}',
-      fatal: true,
-      extraData: {
-        'library': details.library,
-        'stackFiltered': details.stackFilter,
-      },
-    );
-  };
-
-  // Catch unhandled Dart runtime errors
-  PlatformDispatcher.instance.onError = (error, stack) {
-    CrashReporter.reportCrash(
-      error: error,
-      stackTrace: stack,
-      context: 'Dart Runtime Error',
-      fatal: true,
-    );
-    return true; // Keep app running
-  };
-
-  // Optional: Catch errors in the widget tree
-  ErrorWidget.builder = (errorDetails) {
-    CrashReporter.reportCrash(
-      error: errorDetails.exception,
-      stackTrace: errorDetails.stack!,
-      context: 'Error Widget',
-      fatal: false,
-    );
-    return ErrorWidget(errorDetails.exception);
-  };
-
-  runApp(MyApp());
 }
 
-class MyApp extends StatelessWidget {
+class DemoApp extends StatelessWidget {
+  const DemoApp({super.key});
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Crash Reporter Demo',
-      theme: ThemeData(primarySwatch: Colors.blue),
-      home: DemoPage(),
-    );
-  }
-}
-
-class DemoPage extends StatefulWidget {
-  @override
-  _DemoPageState createState() => _DemoPageState();
-}
-
-class _DemoPageState extends State<DemoPage> {
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: Text('Crash Reporter Demo')),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            ElevatedButton(
-              onPressed: () {
-                try {
-                  throw Exception('Test exception from demo app');
-                } catch (e, stack) {
-                  CrashReporter.reportCrash(
-                    error: e,
-                    stackTrace: stack,
-                    context: 'Demo Button',
-                  );
-                }
-              },
-              child: Text('Test Crash Report'),
-            ),
-            SizedBox(height: 20),
-            ElevatedButton(
-              onPressed: () {
-                CrashReporter.sendEvent(
-                  message: 'User pressed event button',
-                  context: 'Demo Screen',
-                  extraData: {'button': 'event_test', 'time': DateTime.now()},
-                );
-              },
-              child: Text('Send Custom Event'),
-            ),
-            SizedBox(height: 20),
-            ElevatedButton(
-              onPressed: () async {
-                await CrashReporter.testAllConnections();
-              },
-              child: Text('Test All Connections'),
-            ),
-          ],
-        ),
+      title: 'xcrash demo',
+      theme: ThemeData(
+        colorSchemeSeed: Colors.indigo,
+        useMaterial3: true,
       ),
+      // Observer 挂上来以后，pushNamed / pop 都会自动写一条 navigation 面包屑。
+      navigatorObservers: [BreadcrumbNavigatorObserver()],
+      initialRoute: HomePage.route,
+      routes: {
+        HomePage.route: (_) => const HomePage(),
+        CrashDemoPage.route: (_) => const CrashDemoPage(),
+        ReportDemoPage.route: (_) => const ReportDemoPage(),
+        RateLimitDemoPage.route: (_) => const RateLimitDemoPage(),
+        VideoDemoPage.route: (_) => const VideoDemoPage(),
+        PayloadLogPage.route: (_) => const PayloadLogPage(),
+        TelegramConfigPage.route: (_) => const TelegramConfigPage(),
+      },
     );
   }
 }
