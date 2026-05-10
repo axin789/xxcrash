@@ -425,7 +425,7 @@ Telegram 单消息上限 4096 字符，SDK 在 4000 字符处截断并追加 `�
 
 ```bash
 flutter pub get
-flutter test                                          # 81 个测试
+flutter test                                          # 101 个测试
 flutter test test/crash_sdk_test.dart                 # 单文件
 flutter test --plain-name 'sender 抛异常被吞掉'       # 按名称
 flutter analyze                                       # 0 issues

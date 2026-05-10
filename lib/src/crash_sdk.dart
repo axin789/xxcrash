@@ -438,6 +438,29 @@ class XCrashSDK {
     _LifecycleObserver().didChangeAppLifecycleState(state);
   }
 
+  /// 仅用于测试：跟生产路径里的 hook dedup 行为完全一致。返回 true 表示
+  /// "这次应该被去重掉"，false 表示"这次允许放行"。
+  @visibleForTesting
+  static bool debugCheckHookDedup(Object error) =>
+      _shouldDedupHookCrash(error);
+
+  /// 仅用于测试：把 dedup 状态置为冷启动，避免相邻测试互相污染。
+  @visibleForTesting
+  static void debugResetHookDedup() {
+    _lastHookErrorHash = 0;
+    _lastHookErrorMs = 0;
+  }
+
+  /// 仅用于测试：装上 FlutterError / PlatformDispatcher 两路 hook，
+  /// 不走 init 的 runZonedGuarded + appRunner 路径。用来验证：
+  /// 1. 异常被正确转成 report；
+  /// 2. 装 hook 之前用户已经设过的 prev handler 仍然被链式调用。
+  @visibleForTesting
+  static void debugInstallHooks() {
+    _hookFlutterError();
+    _hookPlatformDispatcher();
+  }
+
   /// 仅用于测试：重置所有静态状态。
   @visibleForTesting
   static void debugReset() {

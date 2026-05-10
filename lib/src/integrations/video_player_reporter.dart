@@ -164,13 +164,16 @@ class VideoPlayerReporter {
 
   /// 用户手动触发的花屏/画面异常反馈。
   /// 建议在 UI 里放一个"画面异常"按钮让用户主动上报，附带时段快照。
-  void reportVisualGlitch({Map<String, dynamic>? extra}) {
+  ///
+  /// 返回 Future 让调用方能 await 上报完成（典型场景：弹一个"反馈已提交"
+  /// 提示要等真发出去）。未 attach 时静默忽略，返回已 resolve 的 Future。
+  Future<void> reportVisualGlitch({Map<String, dynamic>? extra}) {
     if (!_attached) {
       debugPrint('[VideoPlayerReporter] reportVisualGlitch ignored: not attached');
-      return;
+      return Future.value();
     }
     final v = controller.value;
-    XCrashSDK.reportVideoError(
+    return XCrashSDK.reportVideoError(
       subKey: 'visual_glitch',
       videoUrl: videoUrl,
       severity: Severity.warning,
