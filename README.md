@@ -25,10 +25,20 @@
 
 ## 安装
 
+直接拉 git，免私有 pub：
+
 ```yaml
 dependencies:
   xcrash:
-    path: ../path/to/xcrash   # 或私有 pub / git
+    git:
+      url: https://github.com/axin789/xxcrash.git
+      ref: main          # 或锁到具体 tag / commit，例如 ref: v2.0.0
+```
+
+跑一次：
+
+```bash
+flutter pub get
 ```
 
 要求 Dart SDK `>=2.17.0 <4.0.0`。公开入口只有一个：
@@ -36,6 +46,9 @@ dependencies:
 ```dart
 import 'package:xcrash/xcrash.dart';
 ```
+
+> 想固定版本，把 `ref: main` 换成 `ref: v2.0.0`（或任意 commit hash）。
+> 本地 fork / 改造期间也可以临时用 `path: ../xcrash`。
 
 ---
 
@@ -412,7 +425,7 @@ Telegram 单消息上限 4096 字符，SDK 在 4000 字符处截断并追加 `�
 
 ```bash
 flutter pub get
-flutter test                                          # 67 个测试
+flutter test                                          # 81 个测试
 flutter test test/crash_sdk_test.dart                 # 单文件
 flutter test --plain-name 'sender 抛异常被吞掉'       # 按名称
 flutter analyze                                       # 0 issues

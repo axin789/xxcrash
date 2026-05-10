@@ -430,6 +430,14 @@ class XCrashSDK {
   static Future<void> debugFlushPendingAndDetectLastCrash() =>
       _flushPendingAndDetectLastCrash();
 
+  /// 仅用于测试：模拟 Flutter 派发的生命周期变化。
+  /// 内部走 [_LifecycleObserver]，能验证 paused/detached 写干净退出标记、
+  /// resumed 清掉标记 + 自增 foregroundCount + 写面包屑等副作用。
+  @visibleForTesting
+  static void debugDispatchLifecycle(AppLifecycleState state) {
+    _LifecycleObserver().didChangeAppLifecycleState(state);
+  }
+
   /// 仅用于测试：重置所有静态状态。
   @visibleForTesting
   static void debugReset() {
@@ -593,6 +601,17 @@ class XCrashSDK {
     _lastHookErrorMs = now;
     return false;
   }
+
+  /// 把 stack trace 压成可上报字符串。两层截断：
+  /// 1. 行级：超过 [maxLines] 行就 `take(N)` + `... (M more)` 后缀；
+  /// 2. 字符级：`out.length > _maxStackChars` 时硬截到 [_maxStackChars]，
+  ///    AOT obfuscated stack 经常是无换行的长串，按行截完全无效。
+  ///
+  /// 暴露成 visibleForTesting 是为了让测试不必经过完整 report() 路径
+  /// 就能验证两层截断都生效（生产代码不要直接调）。
+  @visibleForTesting
+  static String trimStackForTest(StackTrace stack, {int maxLines = 50}) =>
+      _trimStack(stack, maxLines: maxLines);
 
   static String _trimStack(StackTrace stack, {int maxLines = 50}) {
     final text = stack.toString();

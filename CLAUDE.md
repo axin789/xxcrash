@@ -15,7 +15,7 @@ The barrel uses explicit `show` clauses to pin the public surface to exactly 7 s
 ```bash
 flutter pub get                                       # install deps
 flutter pub get --directory example                   # also needed for the demo
-flutter test                                          # run all 67 tests
+flutter test                                          # run all 81 tests
 flutter test test/crash_sdk_test.dart                 # single file
 flutter test --plain-name 'sender 抛异常被吞掉'       # single test by name
 flutter analyze                                       # static analysis (expects 0 issues)
