@@ -1,0 +1,6 @@
+- name: Analyze
+  # SDK 项目要求 0 issue 才算通过
+  run: flutter analyze --fatal-infos --fatal-warnings
+
+- name: Test
+  run: flutter test --no-pub --reporter expanded
