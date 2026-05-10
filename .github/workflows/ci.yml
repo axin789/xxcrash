@@ -1,6 +1,42 @@
-- name: Analyze
-  # SDK 项目要求 0 issue 才算通过
-  run: flutter analyze --fatal-infos --fatal-warnings
+name: CI
 
-- name: Test
-  run: flutter test --no-pub --reporter expanded
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# 并行的 PR / push 之间只保留最后一次
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: flutter analyze + test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          # 不锁版本——跟着 stable 走。要锁就把 channel 换成 'flutter-version'
+          # 并加 flutter-version: '3.x.y'
+          cache: true
+
+      - name: Print Flutter version
+        run: flutter --version
+
+      - name: Get SDK deps
+        run: flutter pub get
+
+      - name: Analyze
+        # SDK 项目要求 0 issue 才算通过
+        run: flutter analyze --fatal-infos --fatal-warnings
+
+      - name: Test
+        run: flutter test --no-pub --reporter expanded
